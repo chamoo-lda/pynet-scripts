@@ -1,66 +1,77 @@
-import ipaddress
-from ipwhois import IPWhois
-import csv
-import time
+"""
+This module provides functions to check IP addresses and their prefixes.
+"""
 
-def get_whois_data(ip):
-    """
-    Get WHOIS information for an IP address.
-    """
-    try:
-        obj = IPWhois(ip)
-        result = obj.lookup_rdap()
-        return {
-            'IP': ip,
-            'Network Name': result.get('network', {}).get('name', 'N/A'),
-            'Country': result.get('network', {}).get('country', 'N/A'),
-            'ASN': result.get('asn', 'N/A'),
-            'ASN Description': result.get('asn_description', 'N/A')
-        }
-    except Exception as e:
-        return {'IP': ip, 'Error': f"WHOIS lookup failed: {e}"}
+import re
 
-def expand_prefixes(prefixes):
+def validate_ip(ip_addr):
     """
-    Expand a list of IP prefixes into individual IP addresses for WHOIS lookup.
+    Validates an IPv4 address.
+    Returns True if valid, False otherwise.
     """
-    ip_list = []
-    for prefix in prefixes:
+    pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if not re.match(pattern, ip_addr):
+        return False
+    octets = ip_addr.split('.')
+    for octet in octets:
         try:
-            network = ipaddress.ip_network(prefix, strict=False)
-            ip_list.append(str(network[0]))  # Use the first IP for lookup
-        except ValueError as e:
-            print(f"Invalid prefix '{prefix}': {e}")
-    return ip_list
+            if not 0 <= int(octet) <= 255:
+                return False
+        except ValueError:
+            return False
+    return True
 
-def write_results_to_csv(results, output_file):
+def process_prefixes(prefix_list):
     """
-    Write WHOIS results to a CSV file.
+    Processes a list of IP prefixes (e.g. 192.168.1.0/24).
+    Returns a list of valid prefixes.
     """
-    keys = results[0].keys() if results else []
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=keys)
-        writer.writeheader()
-        writer.writerows(results)
+    valid_prefixes = []
+    for prefix_item in prefix_list:
+        try:
+            ip_part, mask = prefix_item.split('/')
+            if validate_ip(ip_part) and 0 <= int(mask) <= 32:
+                valid_prefixes.append(prefix_item)
+        except ValueError:
+            continue
+    return valid_prefixes
+
+def check_ips(ip_address_list, prefixes):
+    """
+    Checks which IPs in ip_address_list belong to the given prefixes.
+    Returns a list of results.
+    """
+    results = []
+    valid_prefixes = process_prefixes(prefixes)
+    for ip_addr_item in ip_address_list:
+        if not validate_ip(ip_addr_item):
+            results.append((ip_addr_item, False))
+            continue
+        match_found = False
+        for prefix in valid_prefixes:
+            ip_part, mask = prefix.split('/')
+            mask = int(mask)
+            ip_bin = ip_to_bin(ip_addr_item)
+            prefix_bin = ip_to_bin(ip_part)
+            if ip_bin[:mask] == prefix_bin[:mask]:
+                match_found = True
+                break
+        results.append((ip_addr_item, match_found))
+    return results
+
+def ip_to_bin(ip_addr):
+    """
+    Converts an IPv4 address to its binary representation as a string.
+    """
+    return ''.join(f'{int(octet):08b}' for octet in ip_addr.split('.'))
 
 if __name__ == "__main__":
-    # List of prefixes to check (example)
-    prefixes = [
-        "xxx.xxx.xxx.xxx/24",
-        "xxx.xxx.xxx.xxx/21"
-    ]
-    
-    # Expand prefixes into a list of IPs for WHOIS
-    ip_list = expand_prefixes(prefixes)
-    
-    # Fetch WHOIS data for each IP
-    whois_results = []
-    for ip in ip_list:
-        print(f"Checking WHOIS for {ip}...")
-        result = get_whois_data(ip)
-        whois_results.append(result)
-        time.sleep(2)  # Avoid rate-limiting
-    
+    # Example usage:
+    test_ips = ['192.168.1.10', '10.0.0.1 ', '256.1.1.1', '192.168.1.255']
+    test_prefixes = ['192.168.1.0/24', '10.0.0.0/8', 'not_a_prefix', '192.168.2.0/24']
+    results = check_ips(test_ips, test_prefixes)
+    for ip_addr_item, is_in_prefix in results:
+        print(f"{ip_addr_item.strip()} is in prefix: {is_in_prefix}")
     # Save results to a CSV file
     output_file = "whois_results.csv"
     write_results_to_csv(whois_results, output_file)
